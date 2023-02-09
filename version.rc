@@ -1,0 +1,19 @@
+#include "version.h"
+
+1 VERSIONINFO
+    FILEVERSION SUDO_VERSION_MAJOR, SUDO_VERSION_MINOR, SUDO_VERSION_PATCH
+    PRODUCTVERSION SUDO_VERSION_MAJOR, SUDO_VERSION_MINOR, SUDO_VERSION_PATCH
+{
+    BLOCK "StringFileInfo" {
+        BLOCK "040904b0" {
+            VALUE "CompanyName",     "Christopher Antos"
+            VALUE "LegalCopyright",  SUDO_COPYRIGHT_STR
+            VALUE "ProductName",     "sudo"
+            VALUE "FileDescription", "sudo for Windows"
+            VALUE "ProductVersion",  SUDO_VERSION_STR
+        }
+    }
+    BLOCK "VarFileInfo" {
+        VALUE "Translation", 0x0409, 1200
+    }
+}
