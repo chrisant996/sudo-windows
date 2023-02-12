@@ -95,7 +95,7 @@ end
 local function setup_cfg(cfg)
     configuration(cfg)
         defines("BUILD_"..cfg:upper())
-        targetdir(to.."/bin/"..cfg)
+        targetdir(to.."/bin/%{cfg.buildcfg}/%{cfg.platform}")
         objdir(to.."/obj/")
 end
 
@@ -190,4 +190,242 @@ define_exe("sudo")
         buildoptions("-fpermissive")
         buildoptions("-std=c++17")
         linkgroups("on")
+
+--------------------------------------------------------------------------------
+local any_warnings_or_failures = nil
+
+--------------------------------------------------------------------------------
+local release_manifest = {
+    "sudo.exe",
+}
+
+--------------------------------------------------------------------------------
+local function warn(msg)
+    print("\x1b[0;33;1mWARNING: " .. msg.."\x1b[m")
+    any_warnings_or_failures = true
+end
+
+--------------------------------------------------------------------------------
+local function failed(msg)
+    print("\x1b[0;31;1mFAILED: " .. msg.."\x1b[m")
+    any_warnings_or_failures = true
+end
+
+--------------------------------------------------------------------------------
+local exec_lead = "\n"
+local function exec(cmd, silent)
+    print(exec_lead .. "## EXEC: " .. cmd)
+
+    if silent then
+        cmd = "1>nul 2>nul "..cmd
+    else
+        -- cmd = "1>nul "..cmd
+    end
+
+    -- Premake replaces os.execute() with a version that runs path.normalize()
+    -- which converts \ to /. This is fine for everything except cmd.exe.
+    local prev_norm = path.normalize
+    path.normalize = function (x) return x end
+    local _, _, ret = os.execute(cmd)
+    path.normalize = prev_norm
+
+    return ret == 0
+end
+
+--------------------------------------------------------------------------------
+local function exec_with_retry(cmd, tries, delay, silent)
+    while tries > 0 do
+        if exec(cmd, silent) then
+            return true
+        end
+
+        tries = tries - 1
+
+        if tries > 0 then
+            print("... waiting to retry ...")
+            local target = os.clock() + delay
+            while os.clock() < target do
+                -- Busy wait, but this is such a rare case that it's not worth
+                -- trying to be more efficient.
+            end
+        end
+    end
+
+    return false
+end
+
+--------------------------------------------------------------------------------
+local function mkdir(dir)
+    if os.isdir(dir) then
+        return
+    end
+
+    local ret = exec("md " .. path.translate(dir), true)
+    if not ret then
+        error("Failed to create directory '" .. dir .. "' ("..tostring(ret)..")", 2)
+    end
+end
+
+--------------------------------------------------------------------------------
+local function rmdir(dir)
+    if not os.isdir(dir) then
+        return
+    end
+
+    return exec("rd /q /s " .. path.translate(dir), true)
+end
+
+--------------------------------------------------------------------------------
+local function unlink(file)
+    return exec("del /q " .. path.translate(file), true)
+end
+
+--------------------------------------------------------------------------------
+local function copy(src, dest)
+    src = path.translate(src)
+    dest = path.translate(dest)
+    return exec("copy /y " .. src .. " " .. dest, true)
+end
+
+--------------------------------------------------------------------------------
+local function rename(src, dest)
+    src = path.translate(src)
+    return exec("ren " .. src .. " " .. dest, true)
+end
+
+--------------------------------------------------------------------------------
+local function file_exists(name)
+    local f = io.open(name, "r")
+    if f ~= nil then
+        io.close(f)
+        return true
+    end
+    return false
+end
+
+--------------------------------------------------------------------------------
+local function have_required_tool(name, fallback)
+    if exec("where " .. name, true) then
+        return name
+    end
+
+    if fallback then
+        local t
+        if type(fallback) == "table" then
+            t = fallback
+        else
+            t = { fallback }
+        end
+        for _,dir in ipairs(t) do
+            local file = dir .. "\\" .. name .. ".exe"
+            if file_exists(file) then
+                return '"' .. file .. '"'
+            end
+        end
+    end
+
+    return nil
+end
+
+--------------------------------------------------------------------------------
+newaction {
+    trigger = "release",
+    description = "Creates a release of sudo-windows",
+    execute = function ()
+        local premake = _PREMAKE_COMMAND
+        local root_dir = path.getabsolute(".build/release") .. "/"
+
+        -- Check we have the tools we need.
+        local have_msbuild = have_required_tool("msbuild", { "c:\\Program Files (x86)\\Microsoft Visual Studio\\2019\\Enterprise\\MSBuild\\Current\\Bin", "c:\\Program Files (x86)\\Microsoft Visual Studio\\2017\\Enterprise\\MSBuild\\Current\\Bin" })
+        local have_7z = have_required_tool("7z", { "c:\\Program Files\\7-Zip", "c:\\Program Files (x86)\\7-Zip" })
+
+        -- Clone repo in release folder and checkout the specified version
+        local code_dir = root_dir .. "~working/"
+        rmdir(code_dir)
+        mkdir(code_dir)
+
+        exec("git clone . " .. code_dir)
+        if not os.chdir(code_dir) then
+            error("Failed to chdir to '" .. code_dir .. "'")
+        end
+        exec("git checkout " .. (_OPTIONS["commit"] or "HEAD"))
+
+        -- Build the code.
+        local x86_ok = true
+        local x64_ok = true
+        local arm64_ok = true
+        local toolchain = "ERROR"
+        local build_code = function (target)
+            if have_msbuild then
+                target = target or "build"
+
+                toolchain = _OPTIONS["vsver"] or "vs2019"
+                exec(premake .. " " .. toolchain)
+                os.chdir(".build/" .. toolchain)
+
+                x86_ok = exec(have_msbuild .. " /m /v:q /p:configuration=release /p:platform=win32 sudo.sln /t:" .. target)
+                x64_ok = exec(have_msbuild .. " /m /v:q /p:configuration=release /p:platform=x64 sudo.sln /t:" .. target)
+
+                os.chdir("../..")
+            else
+                error("Unable to locate msbuild.exe")
+            end
+        end
+
+        -- Build everything.
+        build_code()
+
+        local src = path.getabsolute(".build/" .. toolchain .. "/bin/release").."/"
+
+        -- Do a coarse check to make sure there's a build available.
+        if not os.isdir(src .. ".") or not (x86_ok or x64_ok) then
+            error("There's no build available in '" .. src .. "'")
+        end
+
+        -- Now we can extract the version from the executables.
+        local version = nil
+        local exe = x86_ok and "x32/sudo.exe" or "x64/sudo.exe"
+        local ver_cmd = src:gsub("/", "\\") .. exe .. " --version"
+        for line in io.popen(ver_cmd):lines() do
+            if not version then
+                version = line:match(" (%d%.[%x.]+)")
+            end
+        end
+        if not version then
+            error("Failed to extract version from build executables")
+        end
+
+        -- Now we know the version we can create our output directory.
+        local target_dir = root_dir .. os.date("%Y%m%d_%H%M%S") .. "_" .. version .. "/"
+        rmdir(target_dir)
+        mkdir(target_dir)
+
+        -- Package the release and the pdbs separately.
+        os.chdir(src .. "/x32")
+        if have_7z then
+            exec(have_7z .. " a -r  " .. target_dir .. "/sudo-x86-v" .. version .. "-pdb.zip  *.pdb")
+            exec(have_7z .. " a -r  " .. target_dir .. "/sudo-x86-v" .. version .. "-exe.zip  *.exe")
+        end
+        os.chdir(src .. "/x64")
+        if have_7z then
+            exec(have_7z .. " a -r  " .. target_dir .. "/sudo-x64-v" .. version .. "-pdb.zip  *.pdb")
+            exec(have_7z .. " a -r  " .. target_dir .. "/sudo-x64-v" .. version .. "-exe.zip  *.exe")
+        end
+
+        -- Tidy up code directory.
+        os.chdir(code_dir)
+        rmdir(".build")
+        rmdir(".git")
+        unlink(".gitignore")
+
+        -- Report some facts about what just happened.
+        print("\n\n")
+        if not have_7z then     warn("7-ZIP NOT FOUND -- Packing to .zip files was skipped.") end
+        if not x86_ok then      failed("x86 BUILD FAILED") end
+        if not x64_ok then      failed("x64 BUILD FAILED") end
+        if not any_warnings_or_failures then
+            print("\x1b[0;32;1mRelease " .. version .. " built successfully.\x1b[m")
+        end
+    end
+}
 
