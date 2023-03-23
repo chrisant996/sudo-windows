@@ -758,7 +758,7 @@ main(int argc, const char** argv)
             }
 
             if (!pszPrompt)
-                pszPrompt = L"Enter password for %u: ";
+                pszPrompt = L"[sudo] Enter password for %p: ";
 
             PrintPrompt(pszPrompt, pszUser, fStd);
 
