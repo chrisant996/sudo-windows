@@ -7,6 +7,7 @@
 
 #include <tchar.h>
 #include <strsafe.h>
+#include <assert.h>
 
 #include "commit_file.h"
 #include "version.h"
@@ -266,14 +267,56 @@ InputPassword(WCHAR* out, DWORD len, bool fStd)
     bool ok;
     DWORD err;
 
+    assert(len > 0);
+
     {
         DWORD dummy;
         NoEcho noecho(fStd);
 
-// FUTURE: either remove --stdin completely, or add logic to conditionally use
-// ReadFile() characters until 0x0A and then convert from ACP to WCHAR.
-        ok = !!ReadConsoleW(noecho.GetHandle(), out, len, &dummy, nullptr);
-        err = GetLastError();
+        if (fStd)
+        {
+            char buffer[1024];
+            char* p = buffer;
+            DWORD remaining = _countof(buffer) - 1;
+
+            do
+            {
+                char c;
+                ok = !!ReadFile(noecho.GetHandle(), &c, sizeof(c), &dummy, nullptr);
+                err = GetLastError();
+                if (!ok)
+                    break;
+                if (c == '\r')
+                    continue;
+                if (c == '\n')
+                    break;
+                *(p++) = c;
+                --remaining;
+            }
+            while (remaining);
+
+            *p = '\0';
+
+            if (ok)
+            {
+                if (buffer == p)
+                {
+                    ok = true;
+                    err = NOERROR;
+                    *out = '\0';
+                }
+                else
+                {
+                    ok = !!MultiByteToWideChar(CP_ACP, 0, buffer, -1, out, len);
+                    err = GetLastError();
+                }
+            }
+        }
+        else
+        {
+            ok = !!ReadConsoleW(noecho.GetHandle(), out, len, &dummy, nullptr);
+            err = GetLastError();
+        }
     }
 
     SetLastError(err);
