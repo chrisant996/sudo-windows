@@ -514,19 +514,24 @@ IsElevationNeeded()
 }
 
 static LPWSTR
-BuildParameters(LPCWSTR pszFile, LPCWSTR pszLine, bool fElevated)
+BuildParameters(LPCWSTR pszFile, LPCWSTR pszDir, LPCWSTR pszLine, bool fElevated)
 {
+    WCHAR szDirFlag[1024 + 16] = {};
+    if (pszDir)
+        StringCchPrintfW(szDirFlag, _countof(szDirFlag), L"-D \"%s\"", pszDir);
+
     const size_t file_len = pszFile ? wcslen(pszFile) : 0;
+    const size_t dir_len = wcslen(szDirFlag);
     const size_t line_len = wcslen(pszLine);
 
-    const size_t cch = 3 + file_len + 64 + line_len + 1;
+    const size_t cch = 3 + file_len + 64 + dir_len + line_len + 1;
     LPWSTR pszArgs = LPWSTR(malloc(cch * sizeof(*pszArgs)));
 
-    WCHAR szInsert[64] = {};
+    WCHAR szInsert[1024 + 64] = {};
     if (!fElevated)
-        wsprintf(szInsert, L"--elevated %u", GetCurrentProcessId());
+        StringCchPrintfW(szInsert, _countof(szInsert), L"--elevated %u %s", GetCurrentProcessId(), szDirFlag);
     else
-        wsprintf(szInsert, L"/c");
+        StringCchPrintfW(szInsert, _countof(szInsert), L"%s /c", szDirFlag);
 
     if (pszFile)
         StringCchPrintfW(pszArgs, cch, L"\"%s\" %s %s", pszFile, szInsert, pszLine);
@@ -542,6 +547,20 @@ ShowHelp()
     OutText(usage);
 }
 
+static LPWSTR
+CopyCommandLineW()
+{
+    LPCWSTR pszCmdLine = GetCommandLineW();
+    const size_t len = wcslen(pszCmdLine) + 1;
+
+    LPWSTR psz = (LPWSTR)calloc(len, sizeof(*psz));
+    if (!psz)
+        ExitFailure(ERROR_OUTOFMEMORY);
+
+    wcscpy_s(psz, len, pszCmdLine);
+    return psz;
+}
+
 #ifdef GUI_SUDO
 int PASCAL
 wWinMain(HINSTANCE hinstCurrent, HINSTANCE hinstPrevious, LPWSTR lpszCmdLine, int nCmdShow)
@@ -555,7 +574,7 @@ main(int argc, const char** argv)
     hinstPrevious = 0;
     nCmdShow = 0;
 #else
-    LPCWSTR pszLine = GetCommandLineW();
+    LPCWSTR pszLine = CopyCommandLineW();
     GetArg(pszLine, nullptr, 0);
 #endif
 
@@ -590,6 +609,8 @@ main(int argc, const char** argv)
 
     while (true)
     {
+        LPCWSTR pszFlag = pszLine;
+
         if (TestFlag(pszLine, L"-?") || TestFlag(pszLine, L"-h") || TestFlag(pszLine, L"--help"))
         {
             ShowHelp();
@@ -646,6 +667,10 @@ main(int argc, const char** argv)
                 GetArg(pszLine, szDir, _countof(szDir));
                 pszDir = szDir;
             }
+
+            LPCWSTR pszKeep = pszLine;
+            pszLine = pszFlag;
+            wcscpy_s(const_cast<LPWSTR>(pszFlag), wcslen(pszFlag) + 1, pszKeep);
         }
         else if (TestFlag(pszLine, L"-S") || TestFlag(pszLine, L"--stdin"))
         {
@@ -722,6 +747,23 @@ main(int argc, const char** argv)
         return -1;
     }
 
+    // Expand whatever directory was specified (or . by default) to solve two
+    // problems:  (1) avoid double-processing of relative paths and (2) ensure
+    // CreateProcessWithLogonW doesn't default to %SYSTEMROOT%.
+    WCHAR szAbsDir[1024];
+    {
+        const DWORD len = GetFullPathNameW(pszDir ? pszDir : L".", _countof(szAbsDir), szAbsDir, nullptr);
+        if (!(len > 0 && len < _countof(szAbsDir)))
+            ExitFailure(GetLastError());
+
+        if (fDebug)
+        {
+            OutText("ABSDIR='"); OutText(pszDir ? pszDir : L"."); OutText(L"' -> '"); OutText(szAbsDir); OutText("'\r\n");
+        }
+
+        pszDir = szAbsDir;
+    }
+
     // Spawn the process.  First use ShellExecuteEx() with "runas" to spawn a
     // hidden sudo.exe as Administrator, passing it the original process ID.
     // Once that is running as an Administrator it attaches to the original
@@ -741,7 +783,7 @@ main(int argc, const char** argv)
         si.hStdError = GetStdHandle(STD_ERROR_HANDLE);
 
         PROCESS_INFORMATION pi = {};
-        LPWSTR pszCmdLine = BuildParameters(szFile, pszLine, fElevated);
+        LPWSTR pszCmdLine = BuildParameters(szFile, pszDir, pszLine, fElevated);
 
         if (fDebug)
         {
@@ -809,7 +851,7 @@ main(int argc, const char** argv)
         si.hStdError = GetStdHandle(STD_ERROR_HANDLE);
 
         PROCESS_INFORMATION pi = {};
-        LPWSTR pszCmdLine = BuildParameters(szFile, pszLine, fElevated);
+        LPWSTR pszCmdLine = BuildParameters(szFile, pszDir, pszLine, fElevated);
 
         if (fDebug)
         {
@@ -850,7 +892,7 @@ main(int argc, const char** argv)
         sei.fMask = SEE_MASK_NOASYNC|SEE_MASK_NOCLOSEPROCESS|(fNOUI ? SEE_MASK_FLAG_NO_UI : 0);
         sei.lpVerb = L"runas";
         sei.lpFile = szFile;
-        sei.lpParameters = BuildParameters(nullptr, pszLine, fElevated);
+        sei.lpParameters = BuildParameters(nullptr, pszDir, pszLine, fElevated);
         sei.lpDirectory = pszDir;
         sei.nShow = SW_HIDE;
 
