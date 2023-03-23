@@ -270,6 +270,8 @@ InputPassword(WCHAR* out, DWORD len, bool fStd)
         DWORD dummy;
         NoEcho noecho(fStd);
 
+// FUTURE: either remove --stdin completely, or add logic to conditionally use
+// ReadFile() characters until 0x0A and then convert from ACP to WCHAR.
         ok = !!ReadConsoleW(noecho.GetHandle(), out, len, &dummy, nullptr);
         err = GetLastError();
     }
