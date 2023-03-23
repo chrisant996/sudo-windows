@@ -54,7 +54,11 @@ static const char* const usage =
 "  %%                Expands to a single percent sign.\r\n"
 "\r\n"
 "The password prompt uses the custom prompt string, if provided.  Otherwise it\r\n"
-"uses the %SUDO_PROMPT% or a default prompt string."
+"uses the %SUDO_PROMPT% or a default prompt string.\r\n"
+"\r\n"
+"Options that specify a value only take effect the first time they are\r\n"
+"specified, to help guard against problems if a poorly written script or\r\n"
+"program invokes sudo with user-controlled input."
 ;
 
 inline BYTE ForceUnsigned(char ch) { return BYTE(ch); }
@@ -606,21 +610,42 @@ main(int argc, const char** argv)
         }
         else if (TestFlag(pszLine, L"-p", true) || TestFlag(pszLine, L"--prompt", true))
         {
-            szPrompt[0] = 0;
-            GetArg(pszLine, szPrompt, _countof(szPrompt));
-            pszPrompt = szPrompt;
+            if (pszPrompt)
+            {
+                GetArg(pszLine, nullptr, 0);
+            }
+            else
+            {
+                szPrompt[0] = 0;
+                GetArg(pszLine, szPrompt, _countof(szPrompt));
+                pszPrompt = szPrompt;
+            }
         }
         else if (TestFlag(pszLine, L"-u", true) || TestFlag(pszLine, L"--user", true))
         {
-            szUser[0] = 0;
-            GetArg(pszLine, szUser, _countof(szUser));
-            pszUser = szUser;
+            if (pszUser)
+            {
+                GetArg(pszLine, nullptr, 0);
+            }
+            else
+            {
+                szUser[0] = 0;
+                GetArg(pszLine, szUser, _countof(szUser));
+                pszUser = szUser;
+            }
         }
         else if (TestFlag(pszLine, L"-D", true) || TestFlag(pszLine, L"--chdir", true))
         {
-            szDir[0] = 0;
-            GetArg(pszLine, szDir, _countof(szDir));
-            pszDir = szDir;
+            if (pszDir)
+            {
+                GetArg(pszLine, nullptr, 0);
+            }
+            else
+            {
+                szDir[0] = 0;
+                GetArg(pszLine, szDir, _countof(szDir));
+                pszDir = szDir;
+            }
         }
         else if (TestFlag(pszLine, L"-S") || TestFlag(pszLine, L"--stdin"))
         {
